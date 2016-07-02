@@ -159,7 +159,7 @@ function handleMouseMove(event) {
 
  };
 
-var hemisphereLight, shadowLight;
+var hemisphereLight, shadowLight, ambientLight;
 
 function createLights() {
   /*/
@@ -183,6 +183,7 @@ function createLights() {
   //                                       color,   intensity
   shadowLight = new THREE.DirectionalLight(0xffffff, 0.9);
 
+  ambientLight = new THREE.AmbientLight(0xdc8874, 0.5);
   /*/
    *  Set the direction of the light
   /*/
@@ -211,6 +212,7 @@ function createLights() {
   // to activate the lights, just add them to the scene
   scene.add(hemisphereLight);
   scene.add(shadowLight);
+  scene.add(ambientLight);
 }
 
 var Sea = function () {
@@ -242,6 +244,41 @@ var Sea = function () {
   geom.applyMatrix(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
 
   /*/
+   *  IMPORTANT: By merging vertices we ensure the continuity of the waves
+   *
+   *  http://threejs.org/docs/index.html#Reference/Core/Geometry.mergeVertices
+  /*/
+  geom.mergeVertices();
+
+  /*/
+   *  Get the vertices
+  /*/
+  var l = geom.vertices.length;
+
+  /*/
+   *  Create an array to store new data ssociated to each vertex
+  /*/
+  this.waves = [];
+  for (var i = 0; i < l; i++) {
+    /*/
+     *  Get each Vertex
+    /*/
+    var v = geom.vertices[i];
+
+    /*/
+     *  Store some data associated to it
+    /*/
+    this.waves.push({
+      y: v.y,
+      x: v.x,
+      z: v.z,
+      ang: Math.random() * Math.PI * 2, // a random angle
+      amp: 5 + Math.random() * 15, // a random distance
+      speed: 0.016 + Math.random() * 0.032, // a random speed between 0.016 and 0.048 radians / frame
+    });
+  };
+
+  /*/
    *  Create the material
    *
    *  http://threejs.org/docs/index.html#Reference/Materials/MeshPhongMaterial
@@ -269,6 +306,43 @@ var Sea = function () {
   /*/
   this.mesh.receiveShadow = true;
 }
+
+Sea.prototype.moveWaves = function() {
+  /*/
+   *  Get the vertices
+  /*/
+  var verts = this.mesh.geometry.vertices;
+  var l = verts.length;
+
+  for (var i = 0; i < l; i++) {
+    var v = verts[i];
+    /*/
+     *  Get the data associated to it
+    /*/
+    var vprops = this.waves[i];
+
+    /*/
+     *  UPdate the position of the vertex
+    /*/
+    v.x = vprops.x + Math.cos(vprops.ang) * vprops.amp;
+    v.y = vprops.y + Math.sin(vprops.ang) * vprops.amp;
+
+    /*/
+     *  Increment the angle for the next frame
+    /*/
+    vprops.ang += vprops.speed;
+  }
+
+  /*/
+   *  Tell the renderer that the geometry of the sea has changed.
+   *  In fact, in order to maintain the best level of performance,
+   *  three.js caches the geometries and ignores any changes
+   *  unles we add this line
+  /*/
+  this.mesh.geometry.verticesNeedUpdate = true;
+
+  sea.mesh.rotation.z += 0.005;
+};
 
 /*/
  *  Instantiate the sea and add it to the scene
@@ -545,6 +619,13 @@ var AirPlane = function () {
   this.propeller.add(blade);// x, y, z
   this.propeller.position.set(50, 0, 0);
   this.mesh.add(this.propeller);
+
+  /*/
+   *  Add Pilot to airplane
+  /*/
+  this.pilot = new Pilot();
+  this.pilot.mesh.position.set(-10, 27, 0);
+  this.mesh.add(this.pilot.mesh);
 }
 
 
@@ -553,32 +634,10 @@ function createPlane() {
   airplane = new AirPlane();
   airplane.mesh.scale.set(0.25, 0.25, 0.25);
   airplane.mesh.position.y = 100;
+  airplane.pilot = new Pilot();
   scene.add(airplane.mesh);
 }
 
-function updatePlane() {
-  /*/
-   *  Let's move the airplane between -100 and 100 on the horizontal axis,
-   *  and between 25 and 175 on the vertical axis,
-   *  depending on the mouse position which ranges between -1 and 1
-   *  on both axes.
-   *  To achieve that we use a normalize function (see below)
-  /*/
-
-  var targetX = normalize(mousePos.x, -1, 1, -100, 100);
-  var targetY = normalize(mousePos.y, -1, 1, 25, 175);
-
-  /*/
-   *  Update the airplane's position
-  /*/
-  airplane.mesh.position.x = targetX;
-  airplane.mesh.position.y = targetY;
-
-  /*/
-   *  Rotate the propeller
-  /*/
-  airplane.propeller.rotation.x += 0.3;
-}
 
 function normalize(v, vmin, vmax, tmin, tmax) {
   var nv = Math.max(Math.min(v, vmax), vmin);
@@ -614,7 +673,7 @@ var Pilot = function () {
     color: Colors.brown,
     shading: THREE.FlatShading
   });
-  var body = THREE.Mesh(bodyGeom, bodyMat);
+  var body = new THREE.Mesh(bodyGeom, bodyMat);
   body.position.set(2, -12, 0);
   this.mesh.add(body);
 
@@ -668,6 +727,12 @@ var Pilot = function () {
   var hairs = new THREE.Object3D();
 
   /*/
+   *  Create a container for the hairs at the top of the head
+   *  (the ones that will be animated)
+  /*/
+  this.hairsTop = new THREE.Object3D();
+
+  /*/
    *  Create the hairs at the top of the head
    *  and position them on a 3 x 4 grid
   /*/
@@ -687,10 +752,119 @@ var Pilot = function () {
   /*/
   //                                        x, y, z
   var hairSideGeom = new THREE.BoxGeometry(12, 4, 2);
-
   hairSideGeom.applyMatrix(new THREE.Matrix4().makeTranslation(-6, 0, 0));
   var hairSideR = new THREE.Mesh(hairSideGeom, hairMat);
   var hairSideL = hairSideR.clone();
+  hairSideR.position.set(8, -2, 6);
+  hairSideL.position.set(8, -2, 6);
+  hairs.add(hairSideR);
+  hairs.add(hairSideL);
+
+  /*/
+   *  Create the hairs at the back of the head
+  /*/
+  var hairBackGeom = new THREE.BoxGeometry(2, 8, 10);
+  var hairBack     = new THREE.Mesh(hairBackGeom, hairMat);
+  hairBack.position.set(-1, -4, 0);
+  hairs.add(hairBack);
+  hairs.position.set(-5, 5, 0);
+
+  this.mesh.add(hairs);
+
+  /*/
+   *  Create glasses for pilot
+   *
+   *  http://threejs.org/docs/index.html#Reference/Materials/MeshLambertMaterial
+  /*/
+
+  var glassesGeom = new THREE.BoxGeometry(5, 5, 5);
+  var glassesMat  = new THREE.MeshLambertMaterial({
+    color: Colors.brown
+  });
+  var glassesR    = new THREE.Mesh(glassesGeom, glassesMat);
+  glassesR.position.set(6, 0, 3);
+  var glassesL    = glassesR.clone();
+  glassesL.position.z = -glassesR.position.z;
+
+  var glassesAGeom = new THREE.BoxGeometry(11, 1, 11);
+  var glassesA = new THREE.Mesh(glassesAGeom, glassesMat);
+  this.mesh.add(glassesR);
+  this.mesh.add(glassesL);
+  this.mesh.add(glassesA);
+
+  /*/
+   *  Use Face Mat as material for ear
+  /*/
+  var earGeom = new THREE.BoxGeometry(2, 3, 2);
+  var earL    = new THREE.Mesh(earGeom, faceMat);
+  var earR    = earL.clone();
+  earR.position.set(0, 0, -6);
+  this.mesh.add(earL);
+  this.mesh.add(earR);
+}
+
+/*/
+ *  Move the hair
+/*/
+Pilot.prototype.updateHairs = function() {
+  /*/
+   *  Get the hair
+  /*/
+  var hairs = this.hairsTop.children;
+
+  /*/
+   *  Update them according to the angle of angleHairs
+  /*/
+  var l = hairs.length;
+  for (var i = 0; i < hairs.length; i++) {
+    var h = hairs[i]
+    /*/
+     *  Each hair element will scale on cyclical basis between 75% and 100%
+     *  of its original size
+    /*/
+    h.scale.y = 0.75 + Math.cos(this.angleHairs + i / 3) * 0.25;
+  }
+  /*/
+   *  Increment the angle for the next frame
+  /*/
+  this.angleHairs += 0.16;
+};
+
+function updatePlane() {
+  /*/
+   *  Let's move the airplane between -100 and 100 on the horizontal axis,
+   *  and between 25 and 175 on the vertical axis,
+   *  depending on the mouse position which ranges between -1 and 1
+   *  on both axes.
+   *  To achieve that we use a normalize function (see below)
+  /*/
+
+  var targetX = normalize(mousePos.x, -0.75, 0.75, -100, 100);
+  var targetY = normalize(mousePos.y, -0.75, 0.75, 25, 175);
+
+  /*/
+   *  Update the airplane's position
+   *
+   *  Move the plane at each frame
+   *  by adding a fraction of the remaining distance
+  /*/
+  airplane.mesh.position.y += (targetY - airplane.mesh.position.y) * 0.1;
+
+  /*/
+   *  Rotate the plane proportionally to the remaining distance
+  /*/
+  airplane.mesh.position.x = (airplane.mesh.position.x - targetX) * 0.0064;
+  airplane.mesh.position.z = (targetY - airplane.mesh.position.y) * 0.0128;
+
+  /*/
+   *  Rotate the propeller
+  /*/
+  airplane.propeller.rotation.x += 0.15;
+
+  /*/
+   *  Update the hair
+  /*/
+  airplane.pilot.updateHairs()
 }
 
 
@@ -698,8 +872,10 @@ function loop() {
   /*/
    *  Rotate the sea and the sky
   /*/
-  sea.mesh.rotation.z += 0.005;
-  sky.mesh.rotation.z += 0.01;
+  sea.mesh.rotation.z += 0.0025;
+  sky.mesh.rotation.z += 0.005;
+
+  sea.moveWaves();
 
   updatePlane();
 
